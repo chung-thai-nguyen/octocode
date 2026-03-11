@@ -262,13 +262,10 @@ impl Config {
 
 	/// Get the default template content
 	fn get_default_template_content() -> Result<String> {
-		// First try to read from config-templates/default.toml in the current directory
-		let template_path = std::path::Path::new("config-templates/default.toml");
-		if template_path.exists() {
-			return Ok(fs::read_to_string(template_path)?);
-		}
-
-		// If not found, use embedded template
+		// Always use the compile-time embedded template.
+		// Loading from CWD is intentionally removed: a malicious repository could
+		// supply a crafted config-templates/default.toml to alter LLM endpoints
+		// or inject prompts. The embedded template is the authoritative source.
 		Ok(include_str!("../config-templates/default.toml").to_string())
 	}
 

@@ -407,8 +407,19 @@ impl McpProxyServer {
 		if parts.len() >= 2 && parts[0] == "POST" {
 			let url_path = parts[1];
 			if url_path.starts_with('/') && url_path.len() > 1 {
-				// Remove leading slash and return the repository path
-				return Some(url_path[1..].to_string());
+				let repo_path = &url_path[1..];
+
+				// Security: reject paths that contain any ".." path traversal component.
+				// We check at the Path component level so variants like %2F..%2F or ....//
+				// are also rejected after URL decoding by the OS path parser.
+				let has_traversal = std::path::Path::new(repo_path)
+					.components()
+					.any(|c| c == std::path::Component::ParentDir);
+				if has_traversal {
+					return None;
+				}
+
+				return Some(repo_path.to_string());
 			}
 		}
 		None
@@ -434,6 +445,30 @@ impl McpProxyServer {
 			return Err(anyhow::anyhow!(
 				"Directory not found: {}",
 				full_path.display()
+			));
+		}
+
+		// Security (defense-in-depth): canonicalize and verify the resolved path still starts
+		// within root_path. This catches any symlink tricks or edge cases that slipped past the
+		// component-level ".." check performed in extract_repo_path.
+		let canonical_full = full_path.canonicalize().map_err(|e| {
+			anyhow::anyhow!(
+				"Failed to canonicalize path '{}': {}",
+				full_path.display(),
+				e
+			)
+		})?;
+		let canonical_root = root_path.canonicalize().map_err(|e| {
+			anyhow::anyhow!(
+				"Failed to canonicalize root path '{}': {}",
+				root_path.display(),
+				e
+			)
+		})?;
+		if !canonical_full.starts_with(&canonical_root) {
+			return Err(anyhow::anyhow!(
+				"Repository path '{}' is outside the allowed root directory",
+				repo_path
 			));
 		}
 

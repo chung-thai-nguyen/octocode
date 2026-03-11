@@ -37,7 +37,7 @@ codegen-units = 1       # Reduce parallel code generation units for better optim
 panic = "abort"         # Abort on panic for smaller binary size
 strip = true            # Strip symbols from binary
 opt-level = "z"         # Optimize for size
-overflow-checks = false # Disable overflow checks in release mode
+overflow-checks = true  # Prevent silent integer wrapping (security fix M3)
 
 # Cross-compilation configuration is in .cargo/config.toml
 

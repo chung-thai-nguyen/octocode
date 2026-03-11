@@ -16,6 +16,19 @@ use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Global mutex that serializes all `set_current_dir` mutations.
+///
+/// `std::env::set_current_dir` is process-global state. In an async runtime with
+/// multiple concurrent tasks (tokio multi-thread), two tool invocations CAN race
+/// and overwrite each other's working directory. Any code that must temporarily
+/// change CWD MUST acquire this lock first and restore CWD before releasing it.
+///
+/// We use `tokio::sync::Mutex` (not `std::sync::Mutex`) because the guard must be
+/// held across `.await` points inside `tokio::spawn` futures — `std::sync::MutexGuard`
+/// is not `Send` and would cause a compile error in that context.
+pub static CWD_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+	std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 #[derive(Default)]
 pub struct IndexState {
 	pub current_directory: PathBuf,

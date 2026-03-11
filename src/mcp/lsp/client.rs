@@ -67,7 +67,85 @@ impl LspClient {
 		}
 	}
 
-	/// Start the LSP server process and communication loop
+	/// Security: validate that the LSP server binary is in the allowlist of known LSP servers.
+	///
+	/// Only the basename (filename) of the program path is checked, so full paths like
+	/// `/usr/bin/rust-analyzer` are accepted as long as the binary name matches.
+	///
+	/// This prevents a maliciously crafted user config file from spawning arbitrary executables
+	/// via the LSP integration. To support a custom LSP server, add its binary name here.
+	fn validate_lsp_command(program: &str) -> Result<()> {
+		// Extract just the binary name from a possible full path
+		let binary_name = std::path::Path::new(program)
+			.file_name()
+			.and_then(|n| n.to_str())
+			.unwrap_or(program);
+
+		// Strip common OS-specific extensions (.exe on Windows)
+		let binary_stem = binary_name
+			.strip_suffix(".exe")
+			.unwrap_or(binary_name);
+
+		/// Known, legitimate LSP server binary names.
+		/// Extend this list when adding support for additional language servers.
+		const ALLOWED_LSP_SERVERS: &[&str] = &[
+			// Rust
+			"rust-analyzer",
+			// Python
+			"pylsp",
+			"pyright-langserver",
+			"pyright",
+			"pylsp",
+			"jedi-language-server",
+			// TypeScript / JavaScript
+			"typescript-language-server",
+			"biome",
+			"deno",
+			// Go
+			"gopls",
+			// C / C++
+			"clangd",
+			"ccls",
+			// PHP
+			"intelephense",
+			"phpactor",
+			// Ruby
+			"solargraph",
+			"ruby-lsp",
+			// Java / Kotlin
+			"jdtls",
+			"kotlin-language-server",
+			// Lua
+			"lua-language-server",
+			// Shell / Bash
+			"bash-language-server",
+			// CSS / HTML
+			"vscode-css-language-server",
+			"vscode-html-language-server",
+			// JSON / YAML
+			"vscode-json-language-server",
+			"yaml-language-server",
+			// Generic / other
+			"efm-langserver",
+			"null-ls",
+			"ltex-ls",
+			"marksman",
+			"taplo",
+		];
+
+		if ALLOWED_LSP_SERVERS.contains(&binary_stem) {
+			Ok(())
+		} else {
+			Err(anyhow::anyhow!(
+				"LSP server '{}' is not in the allowlist of known LSP binaries. \
+				If this is a legitimate LSP server, add its binary name to the \
+				ALLOWED_LSP_SERVERS list in src/mcp/lsp/client.rs.",
+				binary_stem
+			))
+		}
+	}
+
+
 	pub async fn start(&self) -> Result<()> {
 		debug!("Starting LSP server with command: {}", self.command);
 
@@ -79,6 +157,9 @@ impl LspClient {
 
 		let program = parts[0];
 		let args = &parts[1..];
+
+		// Security: validate the command against an allowlist of known LSP servers
+		Self::validate_lsp_command(program)?;
 
 		// Spawn LSP process
 		let mut child = tokio::process::Command::new(program)

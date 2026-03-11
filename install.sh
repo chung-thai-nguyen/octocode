@@ -89,6 +89,41 @@ get_latest_version() {
     fi
 }
 
+# Verify SHA-256 checksum of a downloaded file
+# Usage: verify_checksum <file> <checksum_file>
+# Aborts the script if the checksum does not match.
+verify_checksum() {
+    local file="$1"
+    local checksum_file="$2"
+
+    log_info "Verifying SHA-256 checksum..."
+
+    if command_exists sha256sum; then
+        # Linux / most Unix systems
+        if ! sha256sum -c "$checksum_file" --status 2>/dev/null; then
+            log_error "Checksum verification FAILED for: $file"
+            log_error "The downloaded file may be corrupted or tampered with."
+            log_error "Aborting installation for your safety."
+            exit 1
+        fi
+    elif command_exists shasum; then
+        # macOS (BSD shasum)
+        # shasum -c expects lines in "<hash>  <filename>" format
+        if ! shasum -a 256 -c "$checksum_file" --status 2>/dev/null; then
+            log_error "Checksum verification FAILED for: $file"
+            log_error "The downloaded file may be corrupted or tampered with."
+            log_error "Aborting installation for your safety."
+            exit 1
+        fi
+    else
+        log_warning "Neither sha256sum nor shasum found — skipping checksum verification."
+        log_warning "Install 'coreutils' (Linux) or ensure 'shasum' is available (macOS) for integrity checks."
+        return 0
+    fi
+
+    log_success "Checksum verified successfully."
+}
+
 # Download and extract binary
 download_and_install() {
     local version="$1"
@@ -128,6 +163,8 @@ download_and_install() {
 
     local filename="${BINARY_NAME}-${version}-${target}.${ext}"
     local url="https://github.com/$REPO/releases/download/$version/$filename"
+    local checksum_filename="${filename}.sha256"
+    local checksum_url="https://github.com/$REPO/releases/download/$version/$checksum_filename"
 
     log_info "Downloading from: $url"
 
@@ -147,6 +184,18 @@ download_and_install() {
         log_info "On macOS: curl is pre-installed"
         log_info "On Windows: curl is available in Windows 10+ or install via chocolatey"
         exit 1
+    fi
+
+    # Download SHA-256 checksum file and verify integrity before extraction
+    if curl -fsSL "$checksum_url" -o "$tmp_dir/$checksum_filename" 2>/dev/null; then
+        # Rewrite checksum file path to match the local filename (sha256sum -c requires matching name)
+        local expected_hash
+        expected_hash=$(cat "$tmp_dir/$checksum_filename" | awk '{print $1}')
+        echo "$expected_hash  $filename" > "$tmp_dir/${checksum_filename}.normalized"
+        ( cd "$tmp_dir" && verify_checksum "$filename" "${checksum_filename}.normalized" )
+    else
+        log_warning "SHA-256 checksum file not found at: $checksum_url"
+        log_warning "Skipping integrity verification — upgrade to a release that publishes .sha256 files."
     fi
 
     # Extract

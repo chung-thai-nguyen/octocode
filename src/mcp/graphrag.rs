@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::embedding::truncate_output;
 use crate::indexer::{self, graphrag::GraphRAG};
 use crate::mcp::types::{McpError, McpTool};
+use crate::state::CWD_MUTEX;
 
 #[derive(Debug, Clone)]
 pub enum GraphRAGOperation {
@@ -264,13 +265,18 @@ impl GraphRagProvider {
 			"Executing GraphRAG operation"
 		);
 
-		// Change to the working directory for the operation
+		// Change to the working directory for the operation.
+		// Security (M2): acquire global CWD mutex to prevent concurrent tool calls
+		// from racing on process-global CWD state.
 		let original_dir = std::env::current_dir().map_err(|e| {
 			McpError::internal_error(
 				format!("Failed to get current directory: {}", e),
 				"graphrag",
 			)
 		})?;
+
+		let _cwd_guard = CWD_MUTEX.lock().await;
+
 		std::env::set_current_dir(&self.working_directory).map_err(|e| {
 			McpError::internal_error(format!("Failed to change directory: {}", e), "graphrag")
 		})?;
@@ -280,10 +286,11 @@ impl GraphRagProvider {
 			McpError::internal_error(format!("GraphRAG operation failed: {}", e), "graphrag")
 		})?;
 
-		// Restore original directory
+		// Restore original directory then release the CWD lock
 		std::env::set_current_dir(&original_dir).map_err(|e| {
 			McpError::internal_error(format!("Failed to restore directory: {}", e), "graphrag")
 		})?;
+		drop(_cwd_guard);
 
 		// Apply token truncation if needed
 		Ok(truncate_output(&result, max_tokens))

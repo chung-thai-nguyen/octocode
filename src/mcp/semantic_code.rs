@@ -23,6 +23,7 @@ use crate::indexer::search::{
 };
 use crate::indexer::{extract_file_signatures, render_signatures_text, NoindexWalker, PathUtils};
 use crate::mcp::types::{McpError, McpTool};
+use crate::state::CWD_MUTEX;
 use octolib::embedding::constants::MAX_QUERIES;
 
 /// Semantic code search tool provider
@@ -331,7 +332,9 @@ impl SemanticCodeProvider {
 			queries.len()
 		);
 
-		// Change to the working directory for the search with enhanced error handling
+		// Change to the working directory for the search.
+		// Security (M2): acquire the global CWD mutex BEFORE changing directory so that
+		// concurrent async tool invocations cannot race and corrupt each other's CWD.
 		let original_dir = match std::env::current_dir() {
 			Ok(dir) => dir,
 			Err(e) => {
@@ -341,6 +344,9 @@ impl SemanticCodeProvider {
 				));
 			}
 		};
+
+		// Acquire the CWD lock. The lock is async — tokio::sync::Mutex does not block threads.
+		let _cwd_guard = CWD_MUTEX.lock().await;
 
 		if let Err(e) = std::env::set_current_dir(&self.working_directory) {
 			return Err(McpError::internal_error(
@@ -381,15 +387,17 @@ impl SemanticCodeProvider {
 			.await
 		};
 
-		// Restore original directory with enhanced error handling
+		// Restore original directory and release the CWD lock.
+		// Use a block to ensure the guard is dropped (lock released) AFTER directory is restored.
 		if let Err(e) = std::env::set_current_dir(&original_dir) {
-			// Log error but don't fail the operation
+			// Log error but don't fail the operation — we still have search results
 			debug!(
 				error = %e,
 				original_dir = %original_dir.display(),
 				"Failed to restore original directory"
 			);
 		}
+		drop(_cwd_guard);
 
 		// Apply token truncation if needed
 		match results {
@@ -453,8 +461,13 @@ impl SemanticCodeProvider {
 				));
 			}
 
-			// Basic path traversal protection
-			if pattern.contains("..") && (pattern.contains("../") || pattern.contains("..\\")) {
+			// Security: reject any pattern that traverses above the working directory.
+			// We check at the Path component level to catch all variants: "..", "....//",
+			// Windows-style "..\\", and URL-encoded variants that would decode to ParentDir.
+			let has_traversal = std::path::Path::new(pattern)
+				.components()
+				.any(|c| c == std::path::Component::ParentDir);
+			if has_traversal {
 				return Err(McpError::invalid_params(
 					format!(
 						"Invalid file pattern '{}': path traversal not allowed",
